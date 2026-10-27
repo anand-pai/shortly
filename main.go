@@ -9,11 +9,14 @@ import (
 	"os/signal"
 	"shortly/controllers"
 	"shortly/generator"
-	"shortly/repository"
+	"shortly/helpers"
+	repository "shortly/internal/redis"
+	"shortly/internal/scylla"
 	"syscall"
 
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type containers struct {
@@ -34,13 +37,14 @@ func buildContainer(ctx context.Context) *containers {
 	return &containers{
 		UrlShorten: &controllers.ShortnerController{
 			SlugGen: slugGen,
+			Scylla:  scylla.NewScyllaSession(),
 		},
 	}
 
 }
 
 func init() {
-	LoadEnv()
+	godotenv.Load()
 }
 
 func main() {
@@ -51,20 +55,38 @@ func main() {
 	c := buildContainer(ctx)
 	r := mux.NewRouter()
 
-	r.HandleFunc("/shorten", c.UrlShorten.UrlShortnerCreate)
+	r.Handle("/metrics", promhttp.Handler())
+	r.HandleFunc("/shorten", c.UrlShorten.UrlShortnerCreate).Methods("POST")
 
-	port := os.Getenv("PORT")
+	port := helpers.GetEnv("PORT")
 	addr := fmt.Sprintf(":%s", port)
+
+	server := &http.Server{
+		Addr:    addr,
+		Handler: r,
+	}
+
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Error starting http server: %v", err)
+		}
+	}()
+
 	log.Printf("Server started at : %s", port)
 
-	if listenErr := http.ListenAndServe(addr, r); listenErr != nil {
-		log.Fatal("Error starting http server", listenErr)
-	}
-}
+	<-ctx.Done()
 
-func LoadEnv() {
-	err := godotenv.Load(".env")
-	if err != nil {
-		log.Panic("Error loading env configs", err)
-	}
+	log.Println("Shutdown signal received")
+
+	// _, shutdownCancel := context.WithTimeout(
+	// 	context.Background(),
+	// 	5*time.Second,
+	// )
+	// defer shutdownCancel()
+
+	// if err := server.Shutdown(shutdownCtx); err != nil {
+	// 	log.Printf("Server shutdown error: %v", err)
+	// }
+
+	log.Println("Server stopped")
 }

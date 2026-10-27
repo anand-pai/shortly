@@ -3,7 +3,7 @@ package generator
 import (
 	"context"
 	"fmt"
-	"os"
+	"shortly/helpers"
 	"strconv"
 	"strings"
 
@@ -27,7 +27,7 @@ type WorkerIdentity struct {
 // GetWorkerIdentity parses the environment variables injected by Kubernetes.
 func GetWorkerIdentity() (*WorkerIdentity, error) {
 	// Parse Region ID
-	regionStr := os.Getenv("REGION_ID")
+	regionStr := helpers.GetEnv("REGION_ID")
 	if regionStr == "" {
 		regionStr = "0" // Default for local testing
 	}
@@ -37,7 +37,7 @@ func GetWorkerIdentity() (*WorkerIdentity, error) {
 	}
 
 	// Parse Pod Ordinal from StatefulSet POD_NAME (e.g., shortener-app-5 -> 5)
-	podName := os.Getenv("POD_NAME")
+	podName := helpers.GetEnv("POD_NAME")
 	var workerID uint64 = 0
 	if podName != "" {
 		parts := strings.Split(podName, "-")

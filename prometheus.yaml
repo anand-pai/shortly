@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: "scylla-metrics"
+    static_configs:
+      # host.docker.internal routes from inside Docker to your local machine's ports
+      - targets: ["172.17.0.2:9180"]
+
+  - job_name: "shortly-go-app"
+    static_configs:
+      # Replace this with your actual Minikube IP and Go app's NodePort/Service port
+      - targets: ["192.168.49.2:31982"]

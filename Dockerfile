@@ -27,8 +27,6 @@ FROM alpine:3.20
 RUN mkdir -p /code
 WORKDIR /code
 
-# Copy the pre-compiled binary from the builder stage
-COPY --from=builder /code/.env /code/.env
 COPY --from=builder /code/mainfile /code/mainfile
 
 EXPOSE 8000

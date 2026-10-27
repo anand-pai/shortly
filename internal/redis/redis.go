@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
+	"shortly/helpers"
 	"sync"
 	"time"
 
@@ -25,13 +25,15 @@ func (r *Redis) GetRedisConn() *RedisConnect {
 	defer cancel()
 
 	onceRedis.Do(func() {
+
 		client := redis.NewClient(&redis.Options{
-			Addr: fmt.Sprintf("%s:%s", os.Getenv("REDIS_HOST"), os.Getenv("REDIS_PORT")),
+			Addr: getRedisAddr(),
 		})
-		_, err := client.Ping(ctx).Result()
-		if err != nil {
+
+		if _, err := client.Ping(ctx).Result(); err != nil {
 			log.Fatalf("redis conn err : %v", err)
 		}
+
 		redisInstance = &RedisConnect{
 			Client: client,
 		}
@@ -39,4 +41,12 @@ func (r *Redis) GetRedisConn() *RedisConnect {
 	log.Println("Redis connected !!")
 
 	return redisInstance
+}
+
+func getRedisAddr() string {
+
+	host := helpers.GetEnv("REDIS_HOST")
+	port := helpers.GetEnv("REDIS_PORT")
+
+	return fmt.Sprintf("%s:%s", host, port)
 }

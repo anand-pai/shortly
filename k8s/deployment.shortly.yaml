@@ -18,10 +18,13 @@ spec:
 
       containers:
         - name: shortener
-          image: shortly:1.0.2
+          image: shortly:1.4.3
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: shortly-configs
           env:
             # 1. Downward API populates the pod name (e.g. url-shortener-4)
             - name: POD_NAME
