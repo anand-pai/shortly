@@ -8,6 +8,13 @@ spec:
   selector:
     app: shortly
   ports:
-    - port: 80
-      targetPort: 8001
+    - name : grpc
+      port: 8080
+      targetPort: grpc
+    - name : metrics
+      port : 9092
+      targetPort : metrics
+    - name : http
+      port : 8001
+      targetPort : http
   type: NodePort

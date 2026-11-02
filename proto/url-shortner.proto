@@ -2,4 +2,21 @@ syntax = "proto3";
 
 package proto;
 
+option go_package = "shortly/gen";
 
+service UrlShortnerService {
+    rpc CreateShortUrl(CreateUrlRequest) returns (CreateUrlResponse);
+}
+
+message CreateUrlRequest {
+    string long_url = 1;
+    string slug = 2;
+    string domain = 3;
+    int32 channel = 4;
+    int32 is_advc = 5;
+    string company_id = 6;
+}
+
+message CreateUrlResponse {
+    string short_url = 1;
+}

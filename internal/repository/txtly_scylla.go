@@ -32,8 +32,9 @@ func (r *ScyllaTxtlyRepository) insertURLMappingCQL() string {
 			slug,
 			long_url,
 			channel,
-			company_id
-		) VALUES (?, ?, ?,?)
+			company_id,
+			advanced
+		) VALUES (?, ?, ?, ?, ?)
 	`, defaultUrlMappingTable)
 }
 
@@ -55,13 +56,12 @@ func (r *ScyllaTxtlyRepository) insertCompanyUrlsExpiryCQL() string {
 			expiry,
 			slug
 		) VALUES (?,?,?)
-	`, defaultcompanyUrlCreatedTable)
+	`, defaultcompanyUrlExpiryTable)
 }
 
 func (r *ScyllaTxtlyRepository) getBySlug() string {
 	return fmt.Sprintf(`
-		SELECT
-			*
+		SELECT slug, long_url, company_id, channel, advanced
 		FROM %s
 		WHERE slug = ?
 	`, defaultUrlMappingTable)
@@ -80,9 +80,15 @@ func (r *ScyllaTxtlyRepository) CreateShortURL(ctx context.Context, shortUrl mod
 		shortUrl.Created = now
 	}
 
+	expiry := now.AddDate(0, 6, 0)
+
+	if shortUrl.Expiry.IsZero() {
+		shortUrl.Expiry = expiry
+	}
+
 	batch := r.session.Batch(gocql.LoggedBatch).WithContext(ctx)
 
-	batch.Query(r.insertURLMappingCQL(), shortUrl.Slug, shortUrl.LongUrl, shortUrl.CompanyId, shortUrl.Channel)
+	batch.Query(r.insertURLMappingCQL(), shortUrl.Slug, shortUrl.LongUrl, shortUrl.Channel, shortUrl.CompanyId, shortUrl.IsAdvc)
 	batch.Query(r.insertCompanyUrlsCreatedCQL(), shortUrl.CompanyId, bucket, shortUrl.Created, shortUrl.Slug)
 	batch.Query(r.insertCompanyUrlsExpiryCQL(), shortUrl.CompanyId, shortUrl.Expiry, shortUrl.Slug)
 
@@ -95,10 +101,16 @@ func (r *ScyllaTxtlyRepository) CreateShortURL(ctx context.Context, shortUrl mod
 }
 
 func (r *ScyllaTxtlyRepository) GetShortURL(ctx context.Context, slug string) (models.UrlMapping, error) {
-
 	urlMapping := models.UrlMapping{}
-	if err := r.session.Query(r.getBySlug(), slug).WithContext(ctx).Scan(&urlMapping); err != nil {
-		if err == gocql.ErrNotFound {
+	err := r.session.Query(r.getBySlug(), slug).WithContext(ctx).Scan(
+		&urlMapping.Slug,
+		&urlMapping.LongUrl,
+		&urlMapping.CompanyId,
+		&urlMapping.Channel,
+		&urlMapping.Advanced,
+	)
+	if err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
 			return models.UrlMapping{}, ErrSlugNotFound
 		}
 		return models.UrlMapping{}, err

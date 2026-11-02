@@ -6,10 +6,9 @@ import (
 	"time"
 
 	"github.com/gocql/gocql"
-	"github.com/scylladb/gocqlx/v3"
 )
 
-func NewScyllaSession() gocqlx.Session {
+func NewScyllaSession() *gocql.Session {
 
 	host := helpers.GetEnv("SCYLLA_HOST")
 	cluster := gocql.NewCluster(host)
@@ -19,7 +18,7 @@ func NewScyllaSession() gocqlx.Session {
 	cluster.Consistency = gocql.LocalQuorum
 	cluster.Timeout = 5 * time.Second
 
-	session, err := gocqlx.WrapSession(cluster.CreateSession())
+	session, err := cluster.CreateSession()
 	if err != nil {
 		log.Fatalf("Error create scylla session : %v", err)
 	}

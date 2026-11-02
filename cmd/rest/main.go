@@ -8,9 +8,10 @@ import (
 	"os"
 	"os/signal"
 	"shortly/controllers"
-	"shortly/generator"
 	"shortly/helpers"
-	repository "shortly/internal/redis"
+	"shortly/internal/generator"
+	redisRepo "shortly/internal/redis"
+	repo "shortly/internal/repository"
 	"shortly/internal/scylla"
 	"syscall"
 
@@ -25,7 +26,7 @@ type containers struct {
 
 func buildContainer(ctx context.Context) *containers {
 
-	r := repository.Redis{}
+	r := redisRepo.Redis{}
 	redisClient := r.GetRedisConn()
 	slugGen, err := generator.NewSlugGenerator(ctx,
 		generator.NewRedisStateStore(redisClient.Client))
@@ -37,7 +38,9 @@ func buildContainer(ctx context.Context) *containers {
 	return &containers{
 		UrlShorten: &controllers.ShortnerController{
 			SlugGen: slugGen,
-			Scylla:  scylla.NewScyllaSession(),
+			TxtlySvc: repo.NewScyllaTxtlyRepository(
+				scylla.NewScyllaSession(),
+			),
 		},
 	}
 
@@ -52,11 +55,11 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	c := buildContainer(ctx)
+	// c := buildContainer(ctx)
 	r := mux.NewRouter()
 
 	r.Handle("/metrics", promhttp.Handler())
-	r.HandleFunc("/shorten", c.UrlShorten.UrlShortnerCreate).Methods("POST")
+	// r.HandleFunc("/shorten", c.UrlShorten.UrlShortnerCreate).Methods("POST")
 
 	port := helpers.GetEnv("PORT")
 	addr := fmt.Sprintf(":%s", port)

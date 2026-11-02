@@ -18,10 +18,15 @@ spec:
 
       containers:
         - name: shortener
-          image: shortly:1.4.3
+          image: shortly:3.0.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
+              name : grpc
+            - containerPort: 9092
+              name : metrics
+            - containerPort: 8001
+              name : http
           envFrom:
             - configMapRef:
                 name: shortly-configs
@@ -34,3 +39,20 @@ spec:
             # 2. Hardcoded per region deployment (0 = Region A, 1 = Region B)
             - name: REGION_ID
               value: "0"
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

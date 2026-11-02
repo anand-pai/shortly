@@ -37,13 +37,14 @@ import "time"
 // var UrlMappingTable = table.New(urlMappingMeta)
 
 type ShortUrl struct {
-	Slug      string    `json:"slug" db:"slug"`
-	Channel   int       `json:"channel" db:"channel"`
-	LongUrl   string    `json:"long_url" db:"long_url"`
-	CompanyId string    `json:"company_id" db:"company_id"`
-	Bucket    string    `json:"bucket" db:"bucket"`
-	Expiry    time.Time `json:"expiry" db:"expiry"`
-	Created   time.Time `json:"created" db:"created"`
+	Slug      string    `json:"slug"`
+	Channel   int       `json:"channel"`
+	LongUrl   string    `json:"long_url" `
+	CompanyId string    `json:"company_id" `
+	Bucket    string    `json:"bucket"`
+	Expiry    time.Time `json:"expiry"`
+	Created   time.Time `json:"created"`
+	IsAdvc    int       `json:"is_advc"`
 }
 
 type UrlMapping struct {
@@ -51,6 +52,7 @@ type UrlMapping struct {
 	Channel   int    `json:"channel" db:"channel"`
 	LongUrl   string `json:"long_url" db:"long_url"`
 	CompanyId string `json:"company_id" db:"company_id"`
+	Advanced  int    `json:"advanced" db:"advanced"`
 }
 
 type CompanyUrlCreated struct {

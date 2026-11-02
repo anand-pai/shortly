@@ -22,7 +22,7 @@ func RequestIDFromContext(ctx context.Context) string {
 	return ""
 }
 
-func requestIDUnaryInterceptor(log *zap.Logger) grpc.UnaryServerInterceptor {
+func requestIDUnaryInterceptor(log *zap.Logger, workerId string) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		startedAt := time.Now()
 		rid := ""
@@ -44,6 +44,7 @@ func requestIDUnaryInterceptor(log *zap.Logger) grpc.UnaryServerInterceptor {
 			zap.String("request_id", rid),
 			zap.String("method", info.FullMethod),
 			zap.String("grpc_code", code),
+			zap.String("worker_id", workerId),
 			zap.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
 		}
 

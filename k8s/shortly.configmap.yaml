@@ -10,3 +10,7 @@ data:
   REDIS_HOST: "host.minikube.internal"
   REDIS_PORT: "6380"
   SCYLLA_HOST: "host.minikube.internal"
+  SHORTLY_DOMAIN: "shortly-svc"
+  LOG_LEVEL: "debug"
+  GRPC_ADDRESS: 0.0.0.0:8080
+  HTTP_ADDRESS: 0.0.0.0:8001
