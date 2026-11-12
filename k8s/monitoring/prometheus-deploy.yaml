@@ -1,42 +1,67 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: prometheus
-  namespace: default
+  name: txtly-prometheus
+  namespace: scylla
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: prometheus
+      app: txtly-prometheus
   template:
     metadata:
       labels:
-        app: prometheus
+        app: txtly-prometheus
     spec:
-      serviceAccountName: prometheus
+      serviceAccountName: txtly-prometheus
+      nodeSelector:
+        name: scylladb
+      tolerations:
+        - key: "name"
+          operator: "Equal"
+          value: "scylladb"
+          effect: "NoSchedule"
       containers:
-      - name: prometheus
-        image: prom/prometheus:latest
-        ports:
-        - containerPort: 9090
-        volumeMounts:
-        - name: config-volume
-          mountPath: /etc/prometheus/
+        - name: prometheus
+          image: prom/prometheus:v2.53.0
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=2d
+            - --web.enable-lifecycle
+          ports:
+            - containerPort: 9090
+              name: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: data
+              mountPath: /prometheus
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
       volumes:
-      - name: config-volume
-        configMap:
-          name: prometheus-config
+        - name: config
+          configMap:
+            name: txtly-prometheus-config
+        - name: data
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: prometheus-service
-  namespace: default
+  name: txtly-prometheus
+  namespace: scylla
 spec:
   type: NodePort
   selector:
-    app: prometheus
+    app: txtly-prometheus
   ports:
-  - port: 9090
-    targetPort: 9090
-    nodePort: 30090
+    - name: http
+      port: 9090
+      targetPort: http
+      nodePort: 30092

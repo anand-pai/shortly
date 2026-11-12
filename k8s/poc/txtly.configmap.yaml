@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: txtly-configs
+data:
+  PORT: "8001"
+  POD_NAME:
+  REGION_ID:
+  APP_ENV: "production"
+  REDIS_HOST: "txtly-redis"
+  REDIS_PORT: "6379"
+  SCYLLA_HOST: "scylladb-dc1-rack1-0.scylla.svc.cluster.local"
+  SCYLLA_PORT: "9042"
+  SCYLLA_KEYSPACE: "txtly"
+  SCYLLA_USERNAME: "cassandra"
+  SCYLLA_PASSWORD: "cassandra"
+  SCYLLA_CONSISTENCY: "LOCAL_QUORUM"
+  SHORTLY_DOMAIN: "shortly-svc"
+  LOG_LEVEL: "debug"
+  GRPC_ADDRESS: 0.0.0.0:8080
+  HTTP_ADDRESS: 0.0.0.0:8001

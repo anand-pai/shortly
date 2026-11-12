@@ -10,14 +10,27 @@ import (
 
 func NewScyllaSession() *gocql.Session {
 
-	host := helpers.GetEnv("SCYLLA_HOST")
-	cluster := gocql.NewCluster(host)
-	cluster.Keyspace = "txtly"
-	cluster.Port = 9042
-	cluster.DisableInitialHostLookup = true
-	cluster.Consistency = gocql.LocalQuorum
-	cluster.Timeout = 5 * time.Second
 
+	keyspace := helpers.GetEnv("SCYLLA_KEYSPACE")
+	port := helpers.GetEnv("SCYLLA_PORT")
+	host := helpers.GetEnv("SCYLLA_HOST")
+	disableHostLookup := helpers.GetEnv("SCYLLA_DISABLE_HOST_LOOKUP")
+	consistency := helpers.GetEnv("SCYLLA_CONSISTENCY")
+
+	username := helpers.GetEnv("SCYLLA_USERNAME")
+	password := helpers.GetEnv("SCYLLA_PASSWORD")
+
+	cluster := gocql.NewCluster(host)
+	cluster.Keyspace = keyspace
+	cluster.Port, _ = strconv.Atoi(port)
+	cluster.DisableInitialHostLookup = disableHostLookup == "true"
+	cluster.Consistency = gocql.ParseConsistency(consistency)
+	cluster.Timeout = 5 * time.Second
+	cluster.Authenticator = gocql.PasswordAuthenticator{
+		Username: username,
+		Password: password,
+	}
+	
 	session, err := cluster.CreateSession()
 	if err != nil {
 		log.Fatalf("Error create scylla session : %v", err)

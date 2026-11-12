@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shortly-configs
+data:
+  PORT: "8001"
+  POD_NAME:
+  REGION_ID:
+  APP_ENV: "production"
+  REDIS_HOST: "kcloud-dev-redis.cijac9.ng.0001.aps1.cache.amazonaws.com"
+  REDIS_PORT: "6379"
+  SCYLLA_HOST: "scylladb-dc1-rack1-0.scylla.svc.cluster.local"
+  SCYLLA_PORT: "9042"
+  SCYLLA_KEYSPACE: "txtly"
+  SCYLLA_USERNAME: "cassandra"
+  SCYLLA_PASSWORD: "cassandra"
+  SHORTLY_DOMAIN: "shortly-svc"
+  LOG_LEVEL: "debug"
+  GRPC_ADDRESS: 0.0.0.0:8080
+  HTTP_ADDRESS: 0.0.0.0:8001

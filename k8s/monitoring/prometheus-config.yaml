@@ -1,47 +1,36 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: prometheus-config
-  namespace: default
+  name: txtly-prometheus-config
+  namespace: scylla
 data:
   prometheus.yml: |
     global:
       scrape_interval: 15s
     scrape_configs:
-      # 1. Your existing Go app scrape job
-      - job_name: 'shortly-kubernetes-pods'
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:9090"]
+
+      # HTTP redirect metrics (shortly_redirect_*) and gRPC metrics
+      # (grpc_server_*) are both registered on the process /metrics server,
+      # which listens on container port 9092.
+      - job_name: txtly-http-grpc
         kubernetes_sd_configs:
           - role: pod
+            namespaces:
+              names:
+                - scylla
         relabel_configs:
           - source_labels: [__meta_kubernetes_pod_label_app]
-            regex: shortly
+            regex: txtly-app
             action: keep
           - source_labels: [__meta_kubernetes_pod_container_port_number]
             regex: "9092"
             action: keep
-          - source_labels: [__address__]
-            action: replace
-            regex: ([^:]+)(?::\d+)?
-            replacement: $1:9092
-            target_label: __address__
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
-
-    
-      - job_name: 'kubernetes-cadvisor'
-        scheme: https
-        tls_config:
-          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-          insecure_skip_verify: true
-        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
-        kubernetes_sd_configs:
-          - role: node
-        relabel_configs:
-          - action: labelmap
-            regex: __meta_kubernetes_node_label_(.+)
-          - target_label: __address__
-            replacement: kubernetes.default.svc:443
-          - source_labels: [__meta_kubernetes_node_name]
-            regex: (.+)
-            target_label: __metrics_path__
-            replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
