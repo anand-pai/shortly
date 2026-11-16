@@ -34,3 +34,29 @@ data:
             target_label: namespace
           - source_labels: [__meta_kubernetes_pod_node_name]
             target_label: node
+
+      # Scylla serves its own metrics on container port 9180.
+      # The nine scylladb-dc1-rack{1,2,3}-{0,1,2} pods match app=scylla.
+      - job_name: scylla
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - scylla
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            regex: scylla
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_container_port_name]
+            regex: prometheus
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_label_scylla_cluster]
+            target_label: cluster
+          - source_labels: [__meta_kubernetes_pod_label_scylla_datacenter]
+            target_label: dc
+          - source_labels: [__meta_kubernetes_pod_label_scylla_rack]
+            target_label: rack

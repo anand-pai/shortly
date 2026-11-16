@@ -1,0 +1,61 @@
+# Sleeps, like txtly-app, so a locally built binary can be copied in.
+# No image build. From a Linux binary named "loadtest" in the current directory:
+#
+#   kubectl apply -f k8s/poc/txtly-loadtest.yaml
+#   ./copy-loadtest.sh
+#   kubectl exec -n scylla txtly-loadtest -- tail -f /tmp/loadtest.log
+#
+# Build that binary on a machine with Go, not in this VM:
+#   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o loadtest ./cmd/loadtest
+#
+# Edit the env values to change rate and mix, then run copy-loadtest.sh again.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: txtly-loadtest
+  namespace: scylla
+  labels:
+    app: txtly-loadtest
+spec:
+  restartPolicy: Always
+  nodeSelector:
+    name: scylladb
+  tolerations:
+    - key: "name"
+      operator: "Equal"
+      value: "scylladb"
+      effect: "NoSchedule"
+  containers:
+    - name: loadtest
+      image: debian:bookworm-slim
+      command: ["sleep", "infinity"]
+      env:
+        - name: GRPC_ADDR
+          value: txtly-svc:8080
+        - name: HTTP_BASE
+          value: http://txtly-svc:8001
+        - name: RPS
+          value: "15000"
+        - name: WRITE_PERCENT
+          value: "90"
+        - name: DURATION
+          value: 2m
+        - name: COMPANY_POOL
+          value: "1000"
+        - name: WORKERS
+          value: "512"
+        - name: GRPC_CONNS
+          value: "64"
+        - name: HTTP_CONNS
+          value: "512"
+        - name: WARMUP_SLUGS
+          value: "20000"
+        - name: REPORT_INTERVAL
+          value: 5s
+      resources:
+        requests:
+          cpu: 200m
+          memory: 256Mi
+        limits:
+          cpu: "2"
+          memory: 1Gi
