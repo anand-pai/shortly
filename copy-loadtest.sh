@@ -16,11 +16,16 @@ fi
 kubectl exec -n "$ns" "$pod" -- mkdir -p /code
 kubectl cp "$bin" "$ns/$pod:/code/loadtest"
 kubectl exec -n "$ns" "$pod" -- chmod 755 /code/loadtest
-kubectl exec -n "$ns" "$pod" -- sh -c 'nohup /code/loadtest \
+kubectl exec -n "$ns" "$pod" -- sh -c 'sms_arg=
+if [ -n "${SMS_PERCENT:-}" ]; then
+  sms_arg="--sms-percent $SMS_PERCENT"
+fi
+nohup /code/loadtest \
   --grpc-addr "$GRPC_ADDR" \
   --http-base "$HTTP_BASE" \
   --rps "$RPS" \
   --write-percent "$WRITE_PERCENT" \
+  $sms_arg \
   --duration "$DURATION" \
   --company-pool "$COMPANY_POOL" \
   --workers "$WORKERS" \

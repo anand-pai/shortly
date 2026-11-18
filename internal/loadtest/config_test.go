@@ -11,6 +11,26 @@ func TestDefaultConfigValid(t *testing.T) {
 	}
 }
 
+func TestSMSPercentValidation(t *testing.T) {
+	if got := DefaultConfig().SMSPercent; got != -1 {
+		t.Fatalf("default sms-percent %d", got)
+	}
+	for _, pct := range []int{-1, 0, 100} {
+		cfg := DefaultConfig()
+		cfg.SMSPercent = pct
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("sms-percent %d: %v", pct, err)
+		}
+	}
+	for _, pct := range []int{-2, 101} {
+		cfg := DefaultConfig()
+		cfg.SMSPercent = pct
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("sms-percent %d: expected error", pct)
+		}
+	}
+}
+
 func TestValidate(t *testing.T) {
 	cases := []struct {
 		name   string

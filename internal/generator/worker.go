@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	WorkerBits = 6
+	WorkerBits = 10 // pod id
 	RegionBits = 2
-	MaxWorker  = (uint64(1) << WorkerBits) - 1 // 63
+	MaxWorker  = (uint64(1) << WorkerBits) - 1 // 1023
 	MaxRegion  = (uint64(1) << RegionBits) - 1 // 3
 
 	SafetyCushion = uint64(1_000_000) // Skip margin on crash restart
@@ -54,9 +54,10 @@ func GetWorkerIdentity() (*WorkerIdentity, error) {
 }
 
 // StateStore handles reading/persisting sequence checkpoints on pod startup/shutdown.
+// Each channel keeps its own sequence so SMS and RCS/WA advance independently.
 type StateStore interface {
-	LoadInitialSequence(ctx context.Context, regionID, workerID uint64) (uint64, error)
-	SaveCheckpoint(ctx context.Context, regionID, workerID uint64, seq uint64) error
+	LoadInitialSequence(ctx context.Context, regionID, workerID, channel uint64) (uint64, error)
+	SaveCheckpoint(ctx context.Context, regionID, workerID, channel, seq uint64) error
 }
 
 type RedisStateStore struct {
@@ -67,17 +68,16 @@ func NewRedisStateStore(client *redis.Client) *RedisStateStore {
 	return &RedisStateStore{client: client}
 }
 
-func (s *RedisStateStore) key(regionID, workerID uint64) string {
-	return fmt.Sprintf("shortener:checkpoint:region:%d:worker:%d", regionID, workerID)
+func (s *RedisStateStore) key(regionID, workerID, channel uint64) string {
+	return fmt.Sprintf("shortener:checkpoint:region:%d:worker:%d:channel:%d", regionID, workerID, channel)
 }
 
-func (s *RedisStateStore) LoadInitialSequence(ctx context.Context, regionID, workerID uint64) (uint64, error) {
-	k := s.key(regionID, workerID)
-	val, err := s.client.Get(ctx, k).Result()
+func (s *RedisStateStore) LoadInitialSequence(ctx context.Context, regionID, workerID, channel uint64) (uint64, error) {
+	val, err := s.client.Get(ctx, s.key(regionID, workerID, channel)).Result()
 	if err == redis.Nil {
-		// First time this pod instance ever runs
 		return 0, nil
-	} else if err != nil {
+	}
+	if err != nil {
 		return 0, err
 	}
 
@@ -86,11 +86,10 @@ func (s *RedisStateStore) LoadInitialSequence(ctx context.Context, regionID, wor
 		return 0, err
 	}
 
-	// Add safety margin so any un-persisted, in-flight sequences before crash are skipped
+	// Add safety margin so any un-persisted, in-flight sequences before crash are skipped.
 	return lastSeq + SafetyCushion, nil
 }
 
-func (s *RedisStateStore) SaveCheckpoint(ctx context.Context, regionID, workerID uint64, seq uint64) error {
-	k := s.key(regionID, workerID)
-	return s.client.Set(ctx, k, strconv.FormatUint(seq, 10), 0).Err()
+func (s *RedisStateStore) SaveCheckpoint(ctx context.Context, regionID, workerID, channel, seq uint64) error {
+	return s.client.Set(ctx, s.key(regionID, workerID, channel), strconv.FormatUint(seq, 10), 0).Err()
 }

@@ -60,8 +60,9 @@ var (
 	)
 )
 
-// Slugs produced by the generator are 8-character base62.
-var slugPattern = regexp.MustCompile(`^[0-9A-Za-z]{8}$`)
+// SMS slugs are 8 characters and may contain '-' or '_'. RCS/WA slugs are 11 base62 characters.
+// 9-character slugs are still accepted from the previous SMS encoding.
+var slugPattern = regexp.MustCompile(`^(?:[0-9A-Za-z_-]{8}|[0-9A-Za-z]{9}|[0-9A-Za-z]{11})$`)
 
 const redirectLookupTimeout = 2 * time.Second
 

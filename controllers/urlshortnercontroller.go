@@ -33,7 +33,7 @@ func (s *ShortnerController) UrlShortnerCreate(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	slug, err := s.SlugGen.GenerateSlug()
+	slug, err := s.SlugGen.GenerateSlug(createRequest.Channel)
 
 	if err != nil {
 		log.Printf("unable gen slug : %v", err)

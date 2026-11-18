@@ -23,6 +23,7 @@ Each create calls gRPC CreateShortUrl with an empty slug, so the service generat
 Clicks GET /{slug} on the redirect port and stop at the 302.
 
 --write-percent 80 sends 80 creates and 20 clicks in every 100 measured requests.
+sms-percent is the share of total RPS; the rest is RCS/WA; write-percent still splits creates and clicks across that total.
 Warmup is creates only, until --warmup-slugs are stored.
 company-pool is the number of distinct company_id values. A small pool hot-spots
 company_urls_* partitions; a large pool spreads them. Click lookups only touch url_mappings.
@@ -33,6 +34,7 @@ Examples:
   loadtest --rps 15000 --write-percent 80 --duration 10m --company-pool 1000
   loadtest --rps 15000 --write-percent 60 --duration 10m --company-pool 100000
   loadtest --rps 50000 --write-percent 80 --duration 10m --company-pool 1000 --workers 2000 --grpc-conns 128 --http-conns 2000
+  loadtest --rps 50000 --sms-percent 70 --write-percent 80 --duration 10m --company-pool 1000 --workers 2000 --grpc-conns 128 --http-conns 2000
 
 `)
 		flag.PrintDefaults()
@@ -40,6 +42,7 @@ Examples:
 	flag.IntVar(&cfg.RPS, "rps", cfg.RPS, "total create+click rate")
 	flag.DurationVar(&cfg.Duration, "duration", cfg.Duration, "measured window after warmup, for example 10m")
 	flag.IntVar(&cfg.WritePercent, "write-percent", cfg.WritePercent, "percent of measured requests that create; the rest click (80 or 60)")
+	flag.IntVar(&cfg.SMSPercent, "sms-percent", cfg.SMSPercent, "percent of total RPS that is SMS (channel 0); the rest is RCS/WA (channel 1). -1 sends every create with --channel")
 	flag.StringVar(&cfg.GRPCAddr, "grpc-addr", cfg.GRPCAddr, "plaintext gRPC host:port of CreateShortUrl")
 	flag.StringVar(&cfg.HTTPBase, "http-base", cfg.HTTPBase, "redirect server base URL, for example http://127.0.0.1:8001")
 	flag.IntVar(&cfg.CompanyPool, "company-pool", cfg.CompanyPool, "distinct company_id values, drawn uniformly")
@@ -67,8 +70,12 @@ Examples:
 		os.Exit(2)
 	}
 
-	fmt.Fprintf(os.Stderr, "loadtest rps=%d write_percent=%d duration=%s company_pool=%d distribution=%s grpc=%s http=%s workers=%d grpc_conns=%d http_conns=%d\n",
-		cfg.RPS, cfg.WritePercent, cfg.Duration, cfg.CompanyPool, cfg.ReadDistribution, cfg.GRPCAddr, cfg.HTTPBase, cfg.Workers, cfg.GRPCConns, cfg.HTTPConns)
+	extra := ""
+	if cfg.SMSPercent >= 0 {
+		extra = fmt.Sprintf(" sms_percent=%d", cfg.SMSPercent)
+	}
+	fmt.Fprintf(os.Stderr, "loadtest rps=%d write_percent=%d%s duration=%s company_pool=%d distribution=%s grpc=%s http=%s workers=%d grpc_conns=%d http_conns=%d\n",
+		cfg.RPS, cfg.WritePercent, extra, cfg.Duration, cfg.CompanyPool, cfg.ReadDistribution, cfg.GRPCAddr, cfg.HTTPBase, cfg.Workers, cfg.GRPCConns, cfg.HTTPConns)
 	if cfg.RPS/50 > 0 && cfg.Workers < cfg.RPS/50 {
 		fmt.Fprintf(os.Stderr, "warning: %d workers may not hold %d rps once latency exceeds about 20ms; raise --workers and --http-conns\n", cfg.Workers, cfg.RPS)
 	}

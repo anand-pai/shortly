@@ -35,11 +35,15 @@ spec:
         - name: HTTP_BASE
           value: http://txtly-svc:8001
         - name: RPS
-          value: "15000"
+          value: "18000"
         - name: WRITE_PERCENT
           value: "90"
+        # 70 with RPS 50000 is 35000 SMS rps and 15000 RCS/WA rps.
+        # Empty keeps the binary default (every create uses channel 1).
+        - name: SMS_PERCENT
+          value: ""
         - name: DURATION
-          value: 2m
+          value: 5m
         - name: COMPANY_POOL
           value: "1000"
         - name: WORKERS

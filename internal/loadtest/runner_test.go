@@ -54,19 +54,85 @@ func TestKindFor(t *testing.T) {
 	}
 }
 
+func TestPlanSlot(t *testing.T) {
+	cases := []struct {
+		write int
+		sms   int
+	}{
+		{80, 60},
+		{80, 0},
+		{80, 100},
+		{60, 33},
+		{100, 40},
+		{1, 1},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("write_%d_sms_%d", tc.write, tc.sms), func(t *testing.T) {
+			writes, sms := 0, 0
+			for seq := 0; seq < 1000; seq++ {
+				k, ch := planSlot(uint64(seq), tc.write, tc.sms)
+				if k == int(kindWrite) {
+					writes++
+				}
+				if ch == 0 {
+					sms++
+				}
+			}
+			if writes != tc.write*10 {
+				t.Fatalf("writes %d, want %d", writes, tc.write*10)
+			}
+			if sms != tc.sms*10 {
+				t.Fatalf("sms %d, want %d", sms, tc.sms*10)
+			}
+			var smsW, smsR, rcsW, rcsR int
+			for seq := 0; seq < 100; seq++ {
+				k, ch := planSlot(uint64(seq), tc.write, tc.sms)
+				switch {
+				case ch == 0 && k == int(kindWrite):
+					smsW++
+				case ch == 0:
+					smsR++
+				case k == int(kindWrite):
+					rcsW++
+				default:
+					rcsR++
+				}
+			}
+			if smsW+rcsW != tc.write || smsW+smsR != tc.sms {
+				t.Fatalf("block smsW=%d smsR=%d rcsW=%d rcsR=%d", smsW, smsR, rcsW, rcsR)
+			}
+			// Both channels keep a share of creates and clicks when the mix has room.
+			if tc.write == 80 && tc.sms == 60 && (smsW != 48 || smsR != 12 || rcsW != 32 || rcsR != 8) {
+				t.Fatalf("80/60 block smsW=%d smsR=%d rcsW=%d rcsR=%d", smsW, smsR, rcsW, rcsR)
+			}
+			if tc.write == 60 && tc.sms == 33 && (smsW != 20 || smsR != 13 || rcsW != 40 || rcsR != 27) {
+				t.Fatalf("60/33 block smsW=%d smsR=%d rcsW=%d rcsR=%d", smsW, smsR, rcsW, rcsR)
+			}
+		})
+	}
+}
+
 type memCreate struct {
 	n        atomic.Uint64
 	bad      atomic.Uint64
+	sms      atomic.Uint64
+	rcs      atomic.Uint64
 	pool     int
 	urlBytes int
 }
 
-func (m *memCreate) Create(_ context.Context, longURL, companyID string) (string, error) {
+func (m *memCreate) Create(_ context.Context, longURL, companyID string, channel int32) (string, error) {
 	parsed, err := urlParseOK(longURL)
 	id, idErr := strconv.Atoi(strings.TrimPrefix(companyID, "c-"))
 	if err != nil || !parsed || len(longURL) != m.urlBytes || idErr != nil || id < 0 || id >= m.pool {
 		m.bad.Add(1)
 		return "", errors.New("bad payload")
+	}
+	switch channel {
+	case 0:
+		m.sms.Add(1)
+	case 1:
+		m.rcs.Add(1)
 	}
 	return fmt.Sprintf("%08x", m.n.Add(1)), nil
 }
@@ -88,6 +154,57 @@ func (m *memClick) Click(_ context.Context, slug string) (int, error) {
 	}
 	m.n.Add(1)
 	return http.StatusFound, nil
+}
+
+func TestRunnerChannelMix(t *testing.T) {
+	for _, dist := range []string{"uniform", "zipf"} {
+		t.Run(dist, func(t *testing.T) {
+			cfg := fakeConfig(dist)
+			cfg.SMSPercent = 60
+			cfg.WritePercent = 80
+			create := &memCreate{pool: cfg.CompanyPool, urlBytes: cfg.LongURLBytes}
+			click := &memClick{}
+			sum := runCfg(t, cfg, create, click)
+			sched := sum.ScheduledWrites + sum.ScheduledReads
+			if sum.ScheduledSMS+sum.ScheduledRCS != sched {
+				t.Fatalf("scheduled sms %d rcs %d total %d", sum.ScheduledSMS, sum.ScheduledRCS, sched)
+			}
+			var wantSMS uint64
+			for i := uint64(0); i < sched; i++ {
+				_, ch := planSlot(i, cfg.WritePercent, cfg.SMSPercent)
+				if ch == 0 {
+					wantSMS++
+				}
+			}
+			if sum.ScheduledSMS != wantSMS {
+				t.Fatalf("scheduled sms %d, want %d", sum.ScheduledSMS, wantSMS)
+			}
+			if wantSMS != sched*uint64(cfg.SMSPercent)/100 {
+				t.Fatalf("spread sms %d, want %d%% of %d", wantSMS, cfg.SMSPercent, sched)
+			}
+			if sum.SMS.Write.Count == 0 || sum.RCSWA.Write.Count == 0 {
+				t.Fatalf("measured writes sms %d rcs %d", sum.SMS.Write.Count, sum.RCSWA.Write.Count)
+			}
+			if sum.SMS.Read.Count == 0 || sum.RCSWA.Read.Count == 0 {
+				t.Fatalf("measured reads sms %d rcs %d", sum.SMS.Read.Count, sum.RCSWA.Read.Count)
+			}
+			if sum.SMS.Write.Count+sum.RCSWA.Write.Count != sum.Write.Count {
+				t.Fatalf("channel writes %d+%d aggregate %d", sum.SMS.Write.Count, sum.RCSWA.Write.Count, sum.Write.Count)
+			}
+			if sum.SMS.Read.Count+sum.RCSWA.Read.Count != sum.Read.Count {
+				t.Fatalf("channel reads %d+%d aggregate %d", sum.SMS.Read.Count, sum.RCSWA.Read.Count, sum.Read.Count)
+			}
+			if create.sms.Load() == 0 || create.rcs.Load() == 0 {
+				t.Fatalf("creates sms %d rcs %d", create.sms.Load(), create.rcs.Load())
+			}
+			if create.sms.Load()+create.rcs.Load() != create.n.Load() {
+				t.Fatalf("channel creates %d+%d != %d", create.sms.Load(), create.rcs.Load(), create.n.Load())
+			}
+			if sum.SMSPercent != 60 {
+				t.Fatalf("sms percent %d", sum.SMSPercent)
+			}
+		})
+	}
 }
 
 func TestRunnerMix(t *testing.T) {
@@ -130,7 +247,7 @@ func TestWarmupTimeout(t *testing.T) {
 
 type failCreate struct{}
 
-func (failCreate) Create(context.Context, string, string) (string, error) {
+func (failCreate) Create(context.Context, string, string, int32) (string, error) {
 	return "", errors.New("down")
 }
 
@@ -204,12 +321,22 @@ func assertSchedule(t *testing.T, cfg Config, sum Summary) {
 	}
 	var wantReads uint64
 	for i := uint64(0); i < sched; i++ {
+		if cfg.SMSPercent >= 0 {
+			k, _ := planSlot(i, cfg.WritePercent, cfg.SMSPercent)
+			if kind(k) != kindWrite {
+				wantReads++
+			}
+			continue
+		}
 		if kindFor(i, cfg.WritePercent) == kindRead {
 			wantReads++
 		}
 	}
 	if sum.ScheduledReads != wantReads {
 		t.Fatalf("scheduled reads %d, want %d (writes %d)", sum.ScheduledReads, wantReads, sum.ScheduledWrites)
+	}
+	if cfg.SMSPercent < 0 && (sum.ScheduledSMS != 0 || sum.ScheduledRCS != 0) {
+		t.Fatalf("legacy scheduled sms %d rcs %d", sum.ScheduledSMS, sum.ScheduledRCS)
 	}
 	got := sum.Write.Count + sum.Read.Count + sum.NotStarted
 	if got != sched {

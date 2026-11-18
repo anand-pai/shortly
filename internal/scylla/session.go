@@ -3,13 +3,13 @@ package scylla
 import (
 	"log"
 	"shortly/helpers"
+	"strconv"
 	"time"
 
 	"github.com/gocql/gocql"
 )
 
 func NewScyllaSession() *gocql.Session {
-
 
 	keyspace := helpers.GetEnv("SCYLLA_KEYSPACE")
 	port := helpers.GetEnv("SCYLLA_PORT")
@@ -30,7 +30,7 @@ func NewScyllaSession() *gocql.Session {
 		Username: username,
 		Password: password,
 	}
-	
+
 	session, err := cluster.CreateSession()
 	if err != nil {
 		log.Fatalf("Error create scylla session : %v", err)

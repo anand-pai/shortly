@@ -14,8 +14,8 @@ const longURLPrefix = "https://lt.example/"
 const urlAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
 
 var (
-	errBadSlug  = errors.New("short url did not contain an 8 character slug")
-	slugPattern = regexp.MustCompile(`^[0-9A-Za-z]{8}$`)
+	errBadSlug  = errors.New("short url did not contain a slug")
+	slugPattern = regexp.MustCompile(`^(?:[0-9A-Za-z_-]{8}|[0-9A-Za-z]{9}|[0-9A-Za-z]{11})$`)
 )
 
 func companyIDs(n int) []string {

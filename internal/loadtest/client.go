@@ -71,7 +71,6 @@ func Dial(ctx context.Context, cfg Config) (*Clients, error) {
 	return &Clients{
 		Creator: &grpcCreator{
 			clients: callers,
-			channel: int32(cfg.Channel),
 			isAdvc:  int32(cfg.IsAdvc),
 		},
 		Clicker:   clicker,
@@ -130,17 +129,16 @@ func (c *Clients) Close() {
 type grpcCreator struct {
 	clients []gen.UrlShortnerServiceClient
 	next    atomic.Uint64
-	channel int32
 	isAdvc  int32
 }
 
-func (g *grpcCreator) Create(ctx context.Context, longURL, companyID string) (string, error) {
+func (g *grpcCreator) Create(ctx context.Context, longURL, companyID string, channel int32) (string, error) {
 	i := g.next.Add(1)
 	client := g.clients[int(i%uint64(len(g.clients)))]
 	resp, err := client.CreateShortUrl(ctx, &gen.CreateUrlRequest{
 		LongUrl:   longURL,
 		CompanyId: companyID,
-		Channel:   g.channel,
+		Channel:   channel,
 		IsAdvc:    g.isAdvc,
 	})
 	if err != nil {

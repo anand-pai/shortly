@@ -3,7 +3,8 @@
 // Creates call UrlShortnerService.CreateShortUrl and keep the returned slug.
 // Clicks GET /{slug} on the redirect port and stop at the 302, so the generated
 // long URL is never fetched. The write percentage is exact across every 100
-// measured requests.
+// measured requests. When sms-percent is set, that share of the same stream
+// is SMS and the rest is RCS/WA, also exact across every 100.
 package loadtest
 
 import (
@@ -28,6 +29,7 @@ type Config struct {
 	RPS              int
 	Duration         time.Duration
 	WritePercent     int
+	SMSPercent       int
 	GRPCAddr         string
 	HTTPBase         string
 	CompanyPool      int
@@ -52,6 +54,7 @@ func DefaultConfig() Config {
 		RPS:              15000,
 		Duration:         10 * time.Minute,
 		WritePercent:     80,
+		SMSPercent:       -1,
 		GRPCAddr:         "127.0.0.1:8080",
 		HTTPBase:         "http://127.0.0.1:8001",
 		CompanyPool:      1000,
@@ -96,6 +99,9 @@ func (c Config) Validate() error {
 	}
 	if c.WritePercent < 1 || c.WritePercent > 100 {
 		return errors.New("write-percent must be between 1 and 100")
+	}
+	if c.SMSPercent < -1 || c.SMSPercent > 100 {
+		return errors.New("sms-percent must be -1 or between 0 and 100")
 	}
 	if c.WritePercent < 100 && c.WarmupSlugs < 1 {
 		return errors.New("warmup-slugs must be at least 1 when write-percent is below 100")

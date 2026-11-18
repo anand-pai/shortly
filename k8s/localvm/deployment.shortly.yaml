@@ -18,8 +18,8 @@ spec:
 
       containers:
         - name: shortener
-          image: shortly:3.0.0
-          command: ["sleep", "infinity"]
+          image: shortly:2.0.0
+          # command: ["sleep", "infinity"]
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080

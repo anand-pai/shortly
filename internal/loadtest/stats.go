@@ -213,13 +213,15 @@ func (s *opSnap) add(o opSnap) {
 }
 
 type localStats struct {
-	mu     sync.Mutex
-	warmup opStats
-	write  opStats
-	read   opStats
+	mu      sync.Mutex
+	warmup  opStats
+	write   opStats
+	read    opStats
+	chWrite [2]opStats
+	chRead  [2]opStats
 }
 
-func (s *localStats) record(ph phase, k kind, d time.Duration, key string, success, timed bool) {
+func (s *localStats) record(ph phase, k kind, channel int32, track bool, d time.Duration, key string, success, timed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	dst := &s.write
@@ -230,12 +232,22 @@ func (s *localStats) record(ph phase, k kind, d time.Duration, key string, succe
 		dst = &s.read
 	}
 	dst.record(d, key, success, timed)
+	if ph == phaseWarmup || !track || (channel != 0 && channel != 1) {
+		return
+	}
+	ch := &s.chWrite[channel]
+	if k == kindRead {
+		ch = &s.chRead[channel]
+	}
+	ch.record(d, key, success, timed)
 }
 
-func (s *localStats) snap() (warmup, write, read opSnap) {
+func (s *localStats) snap() (warmup, write, read opSnap, smsN, rcsN uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.warmup.snap(), s.write.snap(), s.read.snap()
+	smsN = s.chWrite[0].count + s.chRead[0].count
+	rcsN = s.chWrite[1].count + s.chRead[1].count
+	return s.warmup.snap(), s.write.snap(), s.read.snap(), smsN, rcsN
 }
 
 // Latency is one side of the measured window (creates or clicks).
@@ -252,12 +264,19 @@ type Latency struct {
 	MaxMS       float64 `json:"max_ms"`
 }
 
+// ChannelReport is measured creates and clicks for one channel.
+type ChannelReport struct {
+	Write Latency `json:"write"`
+	Read  Latency `json:"read"`
+}
+
 // Summary is the measured window, written as JSON on stdout.
 type Summary struct {
 	GRPCAddr         string            `json:"grpc_addr"`
 	HTTPBase         string            `json:"http_base"`
 	TargetRPS        int               `json:"target_rps"`
 	WritePercent     int               `json:"write_percent"`
+	SMSPercent       int               `json:"sms_percent"`
 	CompanyPool      int               `json:"company_pool"`
 	LongURLBytes     int               `json:"long_url_bytes"`
 	ReadDistribution string            `json:"read_distribution"`
@@ -267,12 +286,16 @@ type Summary struct {
 	WindowSeconds    float64           `json:"window_seconds"`
 	ScheduledWrites  uint64            `json:"scheduled_writes"`
 	ScheduledReads   uint64            `json:"scheduled_reads"`
+	ScheduledSMS     uint64            `json:"scheduled_sms"`
+	ScheduledRCS     uint64            `json:"scheduled_rcs_wa"`
 	NotStarted       uint64            `json:"not_started"`
 	WarmupWrites     uint64            `json:"warmup_writes"`
 	WarmupErrors     uint64            `json:"warmup_errors"`
 	WarmupNotStarted uint64            `json:"warmup_not_started"`
 	Write            Latency           `json:"write"`
 	Read             Latency           `json:"read"`
+	SMS              ChannelReport     `json:"sms"`
+	RCSWA            ChannelReport     `json:"rcs_wa"`
 	Statuses         map[string]uint64 `json:"statuses"`
 }
 
@@ -284,6 +307,16 @@ func (s Summary) WriteReport(w io.Writer) {
 		s.WindowSeconds, s.WarmupSeconds, s.ScheduledWrites, s.ScheduledReads, s.NotStarted)
 	writeLatencyLine(w, "write", s.Write)
 	writeLatencyLine(w, "read ", s.Read)
+	if s.SMSPercent >= 0 {
+		fmt.Fprintf(w, "sms_percent %d   scheduled_sms %d   scheduled_rcs_wa %d\n",
+			s.SMSPercent, s.ScheduledSMS, s.ScheduledRCS)
+		fmt.Fprintln(w, "sms")
+		writeLatencyLine(w, "write", s.SMS.Write)
+		writeLatencyLine(w, "read ", s.SMS.Read)
+		fmt.Fprintln(w, "rcs_wa")
+		writeLatencyLine(w, "write", s.RCSWA.Write)
+		writeLatencyLine(w, "read ", s.RCSWA.Read)
+	}
 	fmt.Fprintln(w, "p50/p95/p99 are histogram bucket upper bounds; mean and max are exact")
 }
 

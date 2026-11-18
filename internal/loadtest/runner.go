@@ -38,14 +38,133 @@ func kindFor(seq uint64, writePercent int) kind {
 	return kindRead
 }
 
+func spread(i, percent int) bool {
+	// true for exactly `percent` values of i in 0..99
+	return ((i+1)*percent)/100 != (i*percent)/100
+}
+
+// planSlot is the measured-phase schedule when sms-percent is set.
+// Over every 100 requests, exactly writePercent slots are writes and exactly
+// smsPercent slots are SMS (channel 0). Writes are allotted inside each channel,
+// so a channel does not absorb every click. The two spreads must not share an
+// index: that lines the ticks up and, for example, makes an 80/60 mix all SMS
+// writes and zero SMS clicks.
+func planSlot(seq uint64, writePercent, smsPercent int) (int, int) {
+	p := cachedPlan(writePercent, smsPercent)[seq%100]
+	return int(p.kind), p.channel
+}
+
+type planned struct {
+	kind    kind
+	channel int
+}
+
+var (
+	planMu    sync.Mutex
+	planCache = map[[2]int][]planned{}
+)
+
+func cachedPlan(writePercent, smsPercent int) []planned {
+	key := [2]int{writePercent, smsPercent}
+	planMu.Lock()
+	defer planMu.Unlock()
+	if p, ok := planCache[key]; ok {
+		return p
+	}
+	p := buildPlan(writePercent, smsPercent)
+	planCache[key] = p
+	return p
+}
+
+func buildPlan(writePercent, smsPercent int) []planned {
+	smsN := smsPercent
+	rcsN := 100 - smsN
+	smsW, rcsW := channelWriteCounts(writePercent, smsN, rcsN)
+	smsMark := writeMarks(smsN, smsW)
+	rcsMark := writeMarks(rcsN, rcsW)
+	out := make([]planned, 100)
+	si, ri := 0, 0
+	for i := 0; i < 100; i++ {
+		if spread(i, smsPercent) {
+			k := kindRead
+			if smsMark[si] {
+				k = kindWrite
+			}
+			out[i] = planned{kind: k, channel: 0}
+			si++
+			continue
+		}
+		k := kindRead
+		if rcsMark[ri] {
+			k = kindWrite
+		}
+		out[i] = planned{kind: k, channel: 1}
+		ri++
+	}
+	return out
+}
+
+// channelWriteCounts splits writePercent across the two channel quotas.
+// Truncation leftover (at most one, because the quotas sum to 100) goes to the
+// channel with the larger remainder.
+func channelWriteCounts(writePercent, smsN, rcsN int) (smsW, rcsW int) {
+	if smsN > 0 {
+		smsW = smsN * writePercent / 100
+	}
+	if rcsN > 0 {
+		rcsW = rcsN * writePercent / 100
+	}
+	left := writePercent - smsW - rcsW
+	if left <= 0 {
+		return smsW, rcsW
+	}
+	smsRem, rcsRem := 0, 0
+	if smsN > 0 {
+		smsRem = smsN * writePercent % 100
+	}
+	if rcsN > 0 {
+		rcsRem = rcsN * writePercent % 100
+	}
+	giveSMS := smsN > smsW && (rcsN == rcsW || smsRem > rcsRem || (smsRem == rcsRem && smsN >= rcsN))
+	if giveSMS {
+		smsW++
+	} else if rcsW < rcsN {
+		rcsW++
+	}
+	return smsW, rcsW
+}
+
+// writeMarks is true for exactly want indexes in 0..n-1, spread across the range.
+func writeMarks(n, want int) []bool {
+	out := make([]bool, n)
+	if n == 0 || want <= 0 {
+		return out
+	}
+	if want >= n {
+		for i := range out {
+			out[i] = true
+		}
+		return out
+	}
+	for i := 0; i < n; i++ {
+		if ((i+1)*want)/n != (i*want)/n {
+			out[i] = true
+		}
+	}
+	return out
+}
+
 type job struct {
-	kind  kind
-	phase phase
+	kind    kind
+	phase   phase
+	channel int32
+	track   bool
 }
 
 // Creator issues one short-URL create. The slug field is left empty.
+// channel is sent on CreateUrlRequest (0 SMS, 1 RCS/WA, or --channel in legacy mode).
 type Creator interface {
-	Create(ctx context.Context, longURL, companyID string) (string, error)
+	Create(ctx context.Context, longURL, companyID string, channel int32) (string, error)
 }
 
 // Clicker requests one slug and returns the HTTP status without following redirects.
@@ -57,7 +176,8 @@ type Clicker interface {
 // A Runner is used for one Run.
 type Runner struct {
 	cfg       Config
-	ring      *Ring
+	ring      *Ring    // legacy single pool
+	rings     [2]*Ring // split: 0 SMS, 1 RCS/WA; each has capacity RingSize
 	companies []string
 	locals    []localStats
 	create    Creator
@@ -72,6 +192,8 @@ type Runner struct {
 	inflight         atomic.Int64
 	scheduledWrites  atomic.Uint64
 	scheduledReads   atomic.Uint64
+	scheduledSMS     atomic.Uint64
+	scheduledRCS     atomic.Uint64
 	notStarted       atomic.Uint64
 	warmupNotStarted atomic.Uint64
 }
@@ -84,15 +206,21 @@ func New(cfg Config, create Creator, click Clicker) (*Runner, error) {
 	if create == nil || click == nil {
 		return nil, errors.New("create and click clients are required")
 	}
-	return &Runner{
+	rn := &Runner{
 		cfg:       cfg,
-		ring:      newRing(cfg.RingSize),
 		companies: companyIDs(cfg.CompanyPool),
 		locals:    make([]localStats, cfg.Workers),
 		create:    create,
 		click:     click,
 		log:       log.New(os.Stderr, "", 0),
-	}, nil
+	}
+	if cfg.SMSPercent < 0 {
+		rn.ring = newRing(cfg.RingSize)
+	} else {
+		rn.rings[0] = newRing(cfg.RingSize)
+		rn.rings[1] = newRing(cfg.RingSize)
+	}
+	return rn, nil
 }
 
 type point struct {
@@ -105,6 +233,8 @@ type point struct {
 	warmup           opSnap
 	write            opSnap
 	read             opSnap
+	smsCount         uint64
+	rcsCount         uint64
 }
 
 // Run drives warmup and then the measured window. The summary is returned
@@ -156,27 +286,53 @@ func (r *Runner) worker(id int, jobs <-chan job) {
 	rng := rand.New(rand.NewSource(r.cfg.Seed + int64(id)*1_000_003))
 	urls := newURLGen(r.cfg.LongURLBytes)
 	var zipf *rand.Zipf
-	if r.cfg.ReadDistribution == "zipf" && r.ring.Cap() > 1 {
+	if r.cfg.ReadDistribution == "zipf" && r.ring != nil && r.ring.Cap() > 1 {
 		zipf = rand.NewZipf(rng, 1.2, 1, uint64(r.ring.Cap()-1))
+	}
+	var zipfs [2]*rand.Zipf
+	if r.cfg.ReadDistribution == "zipf" {
+		for i, ring := range r.rings {
+			if ring != nil && ring.Cap() > 1 {
+				zipfs[i] = rand.NewZipf(rng, 1.2, 1, uint64(ring.Cap()-1))
+			}
+		}
 	}
 	for job := range jobs {
 		r.inflight.Add(1)
 		switch job.kind {
 		case kindRead:
-			r.doRead(id, job.phase, rng, zipf)
+			z := zipf
+			if r.cfg.SMSPercent >= 0 {
+				z = zipfs[ringIndexFor(job.channel)]
+			}
+			r.doRead(id, job, rng, z)
 		default:
-			r.doWrite(id, job.phase, rng, urls)
+			r.doWrite(id, job, rng, urls)
 		}
 		r.inflight.Add(-1)
 	}
 }
 
-func (r *Runner) doWrite(id int, ph phase, rng *rand.Rand, urls *urlGen) {
+func ringIndexFor(channel int32) int {
+	if channel == 0 {
+		return 0
+	}
+	return 1
+}
+
+func (r *Runner) slugRing(channel int32) *Ring {
+	if r.cfg.SMSPercent < 0 {
+		return r.ring
+	}
+	return r.rings[ringIndexFor(channel)]
+}
+
+func (r *Runner) doWrite(id int, job job, rng *rand.Rand, urls *urlGen) {
 	company := r.companies[rng.Intn(len(r.companies))]
 	longURL := urls.next(rng)
 	ctx, cancel := context.WithTimeout(context.Background(), r.cfg.Timeout)
 	start := time.Now()
-	slug, err := r.create.Create(ctx, longURL, company)
+	slug, err := r.create.Create(ctx, longURL, company, job.channel)
 	elapsed := time.Since(start)
 	cancel()
 	if err != nil {
@@ -184,21 +340,21 @@ func (r *Runner) doWrite(id int, ph phase, rng *rand.Rand, urls *urlGen) {
 		if errors.Is(err, errBadSlug) {
 			key = "write:BadSlug"
 		}
-		r.locals[id].record(ph, kindWrite, elapsed, key, false, true)
+		r.locals[id].record(job.phase, kindWrite, job.channel, job.track, elapsed, key, false, true)
 		return
 	}
-	r.ring.Push(slug)
-	r.locals[id].record(ph, kindWrite, elapsed, "write:OK", true, true)
+	r.slugRing(job.channel).Push(slug)
+	r.locals[id].record(job.phase, kindWrite, job.channel, job.track, elapsed, "write:OK", true, true)
 }
 
-func (r *Runner) doRead(id int, ph phase, rng *rand.Rand, zipf *rand.Zipf) {
-	slug, ok := r.ring.Sample(rng, zipf)
+func (r *Runner) doRead(id int, job job, rng *rand.Rand, zipf *rand.Zipf) {
+	slug, ok := r.slugRing(job.channel).Sample(rng, zipf)
 	if !ok || !slugPattern.MatchString(slug) {
 		key := "read:empty_pool"
 		if ok {
 			key = "read:BadSlug"
 		}
-		r.locals[id].record(ph, kindRead, 0, key, false, false)
+		r.locals[id].record(job.phase, kindRead, job.channel, job.track, 0, key, false, false)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), r.cfg.Timeout)
@@ -207,10 +363,10 @@ func (r *Runner) doRead(id int, ph phase, rng *rand.Rand, zipf *rand.Zipf) {
 	elapsed := time.Since(start)
 	cancel()
 	if err != nil {
-		r.locals[id].record(ph, kindRead, elapsed, "read:"+netClass(err), false, true)
+		r.locals[id].record(job.phase, kindRead, job.channel, job.track, elapsed, "read:"+netClass(err), false, true)
 		return
 	}
-	r.locals[id].record(ph, kindRead, elapsed, "read:"+strconv.Itoa(code), code == http.StatusFound, true)
+	r.locals[id].record(job.phase, kindRead, job.channel, job.track, elapsed, "read:"+strconv.Itoa(code), code == http.StatusFound, true)
 }
 
 func (r *Runner) pace(ctx context.Context, jobs chan<- job) error {
@@ -244,10 +400,11 @@ func (r *Runner) pace(ctx context.Context, jobs chan<- job) error {
 	defer timer.Stop()
 
 	var (
-		acc    float64
-		seq    uint64
-		last   = time.Now()
-		runErr error
+		acc       float64
+		seq       uint64
+		warmupSeq uint64
+		last      = time.Now()
+		runErr    error
 	)
 
 loop:
@@ -256,15 +413,25 @@ loop:
 			runErr = err
 			break
 		}
-		if measureStart.IsZero() && r.ring.Len() >= r.cfg.WarmupSlugs {
+		if measureStart.IsZero() && r.warmupMet() {
 			measureStart = time.Now()
 			last = measureStart
 			acc = 0
 			r.phase.Store(int32(phaseMeasure))
-			r.log.Printf("warmup complete slugs=%d warmup=%s", r.ring.Len(), measureStart.Sub(r.started).Round(time.Millisecond))
+			if r.cfg.SMSPercent < 0 {
+				r.log.Printf("warmup complete slugs=%d warmup=%s", r.ring.Len(), measureStart.Sub(r.started).Round(time.Millisecond))
+			} else {
+				r.log.Printf("warmup complete sms=%d rcs_wa=%d warmup=%s", r.rings[0].Len(), r.rings[1].Len(), measureStart.Sub(r.started).Round(time.Millisecond))
+			}
 		}
 		if measureStart.IsZero() && time.Now().After(warmupDeadline) {
-			runErr = fmt.Errorf("warmup timed out with %d/%d slugs stored", r.ring.Len(), r.cfg.WarmupSlugs)
+			if r.cfg.SMSPercent < 0 {
+				runErr = fmt.Errorf("warmup timed out with %d/%d slugs stored", r.ring.Len(), r.cfg.WarmupSlugs)
+			} else {
+				smsTarget, rcsTarget := channelTargets(r.cfg.WarmupSlugs, r.cfg.SMSPercent)
+				runErr = fmt.Errorf("warmup timed out with sms %d/%d rcs_wa %d/%d slugs stored",
+					r.rings[0].Len(), smsTarget, r.rings[1].Len(), rcsTarget)
+			}
 			break
 		}
 		if !measureStart.IsZero() && time.Since(measureStart) >= r.cfg.Duration {
@@ -301,22 +468,21 @@ loop:
 				runErr = err
 				break loop
 			}
-			op := kindWrite
+			var j job
 			if phaseNow == phaseMeasure {
-				op = kindFor(seq, r.cfg.WritePercent)
-				seq++
-				if op == kindWrite {
-					r.scheduledWrites.Add(1)
-				} else {
-					r.scheduledReads.Add(1)
-				}
+				j = r.nextMeasured(&seq)
+			} else {
+				j = r.nextWarmup(&warmupSeq)
 			}
 			select {
-			case jobs <- job{kind: op, phase: phaseNow}:
+			case jobs <- j:
 			default:
 				if phaseNow == phaseMeasure {
 					r.notStarted.Add(1)
 				} else {
+					if r.cfg.SMSPercent >= 0 {
+						warmupSeq--
+					}
 					r.warmupNotStarted.Add(1)
 				}
 			}
@@ -325,18 +491,88 @@ loop:
 	return runErr
 }
 
+func channelTargets(warmupSlugs, smsPercent int) (sms, rcs int) {
+	sms = warmupSlugs * smsPercent / 100
+	rcs = warmupSlugs - sms
+	return sms, rcs
+}
+
+func (r *Runner) warmupMet() bool {
+	if r.cfg.SMSPercent < 0 {
+		return r.ring.Len() >= r.cfg.WarmupSlugs
+	}
+	smsTarget, rcsTarget := channelTargets(r.cfg.WarmupSlugs, r.cfg.SMSPercent)
+	if smsTarget > 0 && r.rings[0].Len() < smsTarget {
+		return false
+	}
+	if rcsTarget > 0 && r.rings[1].Len() < rcsTarget {
+		return false
+	}
+	return true
+}
+
+func (r *Runner) stored() int {
+	if r.cfg.SMSPercent < 0 {
+		return r.ring.Len()
+	}
+	return r.rings[0].Len() + r.rings[1].Len()
+}
+
+// nextWarmup is creates only. A split run takes the channel from spread on the
+// sequence of queued creates, so the mix matches sms-percent.
+func (r *Runner) nextWarmup(seq *uint64) job {
+	j := job{kind: kindWrite, phase: phaseWarmup, channel: int32(r.cfg.Channel)}
+	if r.cfg.SMSPercent < 0 {
+		j.track = j.channel == 0 || j.channel == 1
+		return j
+	}
+	j.channel = 1
+	if spread(int(*seq%100), r.cfg.SMSPercent) {
+		j.channel = 0
+	}
+	*seq++
+	j.track = true
+	return j
+}
+
+func (r *Runner) nextMeasured(seq *uint64) job {
+	j := job{phase: phaseMeasure}
+	if r.cfg.SMSPercent < 0 {
+		j.kind = kindFor(*seq, r.cfg.WritePercent)
+		*seq++
+		if j.kind == kindWrite {
+			r.scheduledWrites.Add(1)
+			j.channel = int32(r.cfg.Channel)
+			j.track = j.channel == 0 || j.channel == 1
+		} else {
+			r.scheduledReads.Add(1)
+		}
+		return j
+	}
+	k, ch := planSlot(*seq, r.cfg.WritePercent, r.cfg.SMSPercent)
+	*seq++
+	j.kind = kind(k)
+	j.channel = int32(ch)
+	j.track = true
+	if j.kind == kindWrite {
+		r.scheduledWrites.Add(1)
+	} else {
+		r.scheduledReads.Add(1)
+	}
+	if ch == 0 {
+		r.scheduledSMS.Add(1)
+	} else {
+		r.scheduledRCS.Add(1)
+	}
+	return j
+}
+
 func (r *Runner) dropToken(ph phase, seq *uint64) {
 	if ph != phaseMeasure {
 		r.warmupNotStarted.Add(1)
 		return
 	}
-	op := kindFor(*seq, r.cfg.WritePercent)
-	*seq++
-	if op == kindWrite {
-		r.scheduledWrites.Add(1)
-	} else {
-		r.scheduledReads.Add(1)
-	}
+	r.nextMeasured(seq)
 	r.notStarted.Add(1)
 }
 
@@ -377,16 +613,18 @@ func (r *Runner) snapshot() point {
 	p := point{
 		at:               time.Now(),
 		phase:            phase(r.phase.Load()),
-		filled:           r.ring.Len(),
+		filled:           r.stored(),
 		inflight:         r.inflight.Load(),
 		notStarted:       r.notStarted.Load(),
 		warmupNotStarted: r.warmupNotStarted.Load(),
 	}
 	for i := range r.locals {
-		warm, write, read := r.locals[i].snap()
+		warm, write, read, smsN, rcsN := r.locals[i].snap()
 		p.warmup.add(warm)
 		p.write.add(write)
 		p.read.add(read)
+		p.smsCount += smsN
+		p.rcsCount += rcsN
 	}
 	return p
 }
@@ -428,15 +666,26 @@ func (r *Runner) printDelta(prev, cur point) {
 		cur.notStarted-prev.notStarted,
 		cur.inflight,
 	)
+	if r.cfg.SMSPercent >= 0 {
+		r.log.Printf("phase=measure sms_rps=%.1f rcs_rps=%.1f",
+			float64(cur.smsCount-prev.smsCount)/dt,
+			float64(cur.rcsCount-prev.rcsCount)/dt,
+		)
+	}
 }
 
 func (r *Runner) summary() Summary {
 	var warmup, write, read opStats
+	var smsWrite, smsRead, rcsWrite, rcsRead opStats
 	for i := range r.locals {
 		r.locals[i].mu.Lock()
 		warmup.add(r.locals[i].warmup)
 		write.add(r.locals[i].write)
 		read.add(r.locals[i].read)
+		smsWrite.add(r.locals[i].chWrite[0])
+		smsRead.add(r.locals[i].chRead[0])
+		rcsWrite.add(r.locals[i].chWrite[1])
+		rcsRead.add(r.locals[i].chRead[1])
 		r.locals[i].mu.Unlock()
 	}
 	statuses := make(map[string]uint64, len(write.statuses)+len(read.statuses))
@@ -451,6 +700,7 @@ func (r *Runner) summary() Summary {
 		HTTPBase:         r.cfg.HTTPBase,
 		TargetRPS:        r.cfg.RPS,
 		WritePercent:     r.cfg.WritePercent,
+		SMSPercent:       r.cfg.SMSPercent,
 		CompanyPool:      r.cfg.CompanyPool,
 		LongURLBytes:     r.cfg.LongURLBytes,
 		ReadDistribution: r.cfg.ReadDistribution,
@@ -460,12 +710,22 @@ func (r *Runner) summary() Summary {
 		WindowSeconds:    round(r.window.Seconds(), 3),
 		ScheduledWrites:  r.scheduledWrites.Load(),
 		ScheduledReads:   r.scheduledReads.Load(),
+		ScheduledSMS:     r.scheduledSMS.Load(),
+		ScheduledRCS:     r.scheduledRCS.Load(),
 		NotStarted:       r.notStarted.Load(),
 		WarmupWrites:     warmup.count,
 		WarmupErrors:     warmup.errs,
 		WarmupNotStarted: r.warmupNotStarted.Load(),
 		Write:            latencyOf(write, r.window),
 		Read:             latencyOf(read, r.window),
-		Statuses:         statuses,
+		SMS: ChannelReport{
+			Write: latencyOf(smsWrite, r.window),
+			Read:  latencyOf(smsRead, r.window),
+		},
+		RCSWA: ChannelReport{
+			Write: latencyOf(rcsWrite, r.window),
+			Read:  latencyOf(rcsRead, r.window),
+		},
+		Statuses: statuses,
 	}
 }
